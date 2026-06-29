@@ -1,0 +1,67 @@
+{
+  "name": "sileo-windows",
+  "version": "1.0.0",
+  "description": "Sileo - Free AI dictation app for Windows",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --enable-logging",
+    "icons": "node scripts/gen-icons.js",
+    "dist": "npm run icons && electron-builder --win",
+    "dist:dir": "npm run icons && electron-builder --win --dir"
+  },
+  "keywords": [
+    "dictation",
+    "voice",
+    "transcription",
+    "groq",
+    "whisper"
+  ],
+  "author": "Sileo",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^26.15.3",
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.35.2"
+  },
+  "dependencies": {
+    "uiohook-napi": "^1.5.5"
+  },
+  "build": {
+    "appId": "ai.sileo.windows",
+    "productName": "Sileo",
+    "copyright": "Copyright © 2026 Sileo",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!dist/**",
+      "!scripts/**",
+      "!**/*.map"
+    ],
+    "asarUnpack": [
+      "**/node_modules/uiohook-napi/**"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Sileo"
+    },
+    "portable": {
+      "artifactName": "Sileo-${version}-portable.exe"
+    }
+  }
+}

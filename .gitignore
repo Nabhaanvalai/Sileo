@@ -1,0 +1,10 @@
+build/
+.DS_Store
+*.swp
+.env
+.build
+node_modules/
+electron-app/node_modules/
+dist/
+out/
+*.log

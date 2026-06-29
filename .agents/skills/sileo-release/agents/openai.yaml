@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sileo Release"
+  short_description: "Prepare and publish Sileo semver releases."
+  default_prompt: "Prepare a new Sileo release."
