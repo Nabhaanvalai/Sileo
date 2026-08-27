@@ -23,6 +23,7 @@ const hotkeyDisplay2= document.getElementById('hotkey-display2');
 
 // Settings inputs
 const inpKey       = document.getElementById('inp-key');
+const inpApiBase   = document.getElementById('inp-api-base');
 const inpHotkey    = document.getElementById('inp-hotkey');
 const inpTxModel   = document.getElementById('inp-tx-model');
 const inpLang      = document.getElementById('inp-lang');
@@ -240,9 +241,16 @@ function rebuildHistory() {
 }
 
 function setupHistoryUI() {
-  btnClearHist.addEventListener('click', () => {
-    // Currently clear is UI only, to actually clear file we'd need a backend route
-    // For now we just hide it locally
+  btnClearHist.addEventListener('click', async () => {
+    if (!history.length) return;
+    if (!window.confirm('Clear all saved transcription history? This cannot be undone.')) return;
+
+    const result = await electronAPI.clearHistory();
+    if (!result?.ok) {
+      console.error('[Sileo] Failed to clear history:', result?.error);
+      return;
+    }
+
     history = [];
     rebuildHistory();
     refreshStats();
@@ -373,6 +381,7 @@ function setupOnboarding() {
 // ─── Settings ─────────────────────────────────────────────────────────────────
 function populateSettings() {
   inpKey.value      = settings.groqApiKey         || '';
+  if (inpApiBase) inpApiBase.value = settings.apiBaseUrl || 'https://api.groq.com/openai/v1';
   inpLang.value     = settings.language ?? 'en';
   inpVocab.value    = settings.vocabulary          || '';
   togPP.checked     = settings.postProcessing     !== false;
@@ -416,7 +425,7 @@ function populateSettings() {
 }
 
 function setSel(el, val) {
-  for (const o of el.options) { if (o.value === val) { el.value = val; return; } }
+  if (el) el.value = val || '';
 }
 
 function updateHotkeyDisplay(hk) {
@@ -444,6 +453,7 @@ function setupSettingsUI() {
 async function saveSettings() {
   const s = {
     groqApiKey:         inpKey.value.trim(),
+    apiBaseUrl:         inpApiBase ? inpApiBase.value.trim() : 'https://api.groq.com/openai/v1',
     language:           inpLang.value.trim(),
     vocabulary:         inpVocab.value,
     postProcessing:     togPP.checked,
@@ -467,10 +477,15 @@ async function saveSettings() {
   };
   const r = await electronAPI.saveSettings(s);
   if (r?.ok) {
-    settings = { ...settings, ...s };
+    settings = { ...settings, ...s, apiBaseUrl: r.apiBaseUrl || s.apiBaseUrl };
+    if (inpApiBase) inpApiBase.value = settings.apiBaseUrl;
     updateHotkeyDisplay(s.hotkey);
     saveMsg.textContent = '✓ Saved!';
     setTimeout(() => { saveMsg.textContent = ''; }, 2500);
+  } else {
+    saveMsg.textContent = '✗ ' + (r?.error || 'Could not save settings');
+    saveMsg.style.color = '#C0504D';
+    setTimeout(() => { saveMsg.textContent = ''; saveMsg.style.color = ''; }, 5000);
   }
 }
 

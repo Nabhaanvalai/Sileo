@@ -6,7 +6,6 @@ const {
 } = require('electron');
 const path  = require('path');
 const fs    = require('fs');
-const https = require('https');
 const os    = require('os');
 const { exec } = require('child_process');
 const ContextService = require('./services/ContextService');
@@ -18,6 +17,7 @@ const VocabularyService = require('./services/VocabularyService');
 const CredentialService = require('./services/CredentialService');
 const ZipService = require('./services/ZipService');
 const PushToTalkService = require('./services/PushToTalkService');
+const ApiClient = require('./services/ApiClient');
 // ─── Disable GPU cache & hardware acceleration ────────────────────────────────
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-software-rasterizer');
@@ -37,7 +37,9 @@ let isRecording   = false;
 let lastCapture   = null; // { id, audioBuffer, screenshotBase64, entry }
 
 const DEFAULTS = {
-  groqApiKey:         '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',
+  // Never ship credentials in source; users configure the key during onboarding/settings.
+  groqApiKey:         process.env.GROQ_API_KEY || '',
+  apiBaseUrl:         ApiClient.DEFAULT_API_BASE_URL,
   transcriptionModel: 'whisper-large-v3',
   llmModel:           'llama-3.3-70b-versatile',
   hotkey:             'F9',
@@ -65,6 +67,49 @@ const DEFAULTS = {
 let settings = { ...DEFAULTS };
 let settingsPath = '';
 
+function clampInt(value, fallback, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+function normalizeSettings(input) {
+  const merged = {
+    ...DEFAULTS,
+    ...(input && typeof input === 'object' ? input : {}),
+  };
+
+  const stringFields = [
+    'groqApiKey', 'apiBaseUrl', 'transcriptionModel', 'llmModel', 'hotkey', 'language',
+    'customPrompt', 'customVocabulary', 'voiceMacrosText', 'secondHotkey',
+    'pushToTalkKey',
+  ];
+  for (const field of stringFields) {
+    if (typeof merged[field] !== 'string') merged[field] = DEFAULTS[field] || '';
+  }
+  for (const field of ['postProcessing', 'injectText', 'startMinimized', 'openAtLogin', 'notifyOnDone', 'toneAdaptation', 'vocabularyNotify', 'secureApiKey', 'pushToTalkEnabled', 'liveTranscription', 'onboarded']) {
+    merged[field] = merged[field] === true;
+  }
+
+  merged.transcriptionTimeoutMs = clampInt(merged.transcriptionTimeoutMs, DEFAULTS.transcriptionTimeoutMs, 1000, 120000);
+  merged.llmTimeoutMs = clampInt(merged.llmTimeoutMs, DEFAULTS.llmTimeoutMs, 1000, 120000);
+  merged.groqApiKey = merged.groqApiKey.trim();
+  try {
+    const parsedBase = new URL(merged.apiBaseUrl);
+    if (!['http:', 'https:'].includes(parsedBase.protocol) || parsedBase.username || parsedBase.password) throw new Error('invalid API base URL');
+    parsedBase.hash = '';
+    parsedBase.search = '';
+    parsedBase.pathname = parsedBase.pathname.replace(/\/+$/, '');
+    merged.apiBaseUrl = parsedBase.toString().replace(/\/$/, '');
+  } catch (_) {
+    merged.apiBaseUrl = DEFAULTS.apiBaseUrl;
+  }
+  merged.hotkey = merged.hotkey.trim() || DEFAULTS.hotkey;
+  merged.secondHotkey = merged.secondHotkey.trim();
+  merged.pushToTalkKey = merged.pushToTalkKey.trim() || DEFAULTS.pushToTalkKey;
+  return merged;
+}
+
 // ─── Temp dir for audio ───────────────────────────────────────────────────────
 const TEMP_DIR = path.join(os.tmpdir(), 'sileo-audio');
 
@@ -89,7 +134,7 @@ function loadSettings() {
     settingsPath = path.join(app.getPath('userData'), 'settings.json');
     if (fs.existsSync(settingsPath)) {
       const saved = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-      settings = { ...DEFAULTS, ...saved };
+      settings = normalizeSettings(saved);
 
       // F9 is the default now.
     }
@@ -111,7 +156,11 @@ function persistSettings() {
     const toWrite = { ...settings };
     if (settings.secureApiKey) toWrite.groqApiKey = '';
     fs.writeFileSync(settingsPath, JSON.stringify(toWrite, null, 2));
-  } catch (e) { console.error('[Sileo] Settings save error:', e.message); }
+    return true;
+  } catch (e) {
+    console.error('[Sileo] Settings save error:', e.message);
+    return false;
+  }
 }
 
 // Reflects the current API key into / out of encrypted storage based on the
@@ -123,7 +172,11 @@ function syncSecureKey() {
       settings.secureApiKey = false;
       return false;
     }
-    CredentialService.saveApiKey(settings.groqApiKey);
+    if (!CredentialService.saveApiKey(settings.groqApiKey)) {
+      console.warn('[Sileo] Could not persist API key securely; keeping plaintext mode enabled');
+      settings.secureApiKey = false;
+      return false;
+    }
     return true;
   }
   // Secure mode off → make sure no stale encrypted key lingers.
@@ -134,15 +187,22 @@ function syncSecureKey() {
 // Merge incoming settings, persist, and re-apply anything with side effects.
 function saveSettings(incoming) {
   try {
-    settings = { ...settings, ...incoming };
+    settings = normalizeSettings({
+      ...settings,
+      ...(incoming && typeof incoming === 'object' ? incoming : {}),
+    });
     syncSecureKey();
-    persistSettings();
+    if (!persistSettings()) return { ok: false, error: 'Could not save settings to disk' };
     registerHotkey();
     applyPushToTalk();
     applyLoginItemSetting();
     refreshTrayMenu();
     console.log('[Sileo] Settings saved');
-    return { ok: true, secureKeyActive: !!settings.secureApiKey };
+    return {
+      ok: true,
+      secureKeyActive: !!settings.secureApiKey,
+      apiBaseUrl: settings.apiBaseUrl,
+    };
   } catch (e) {
     console.error('[Sileo] saveSettings error:', e.message);
     return { ok: false, error: e.message };
@@ -166,6 +226,14 @@ function applyLoginItemSetting() {
 function assertOnline() {
   if (!net.isOnline()) {
     throw new Error('You are offline — check your connection');
+  }
+}
+
+function assertApiKey() {
+  if (!ApiClient.isUsableApiKey(settings.groqApiKey, settings.apiBaseUrl)) {
+    throw new Error(ApiClient.requiresApiKey(settings.apiBaseUrl)
+      ? 'Groq API key is not configured — open Settings to add one'
+      : 'Provider API key contains invalid characters');
   }
 }
 
@@ -426,34 +494,28 @@ async function injectTextIntoActiveWindow(text) {
 }
 
 // ─── Groq: Transcription ─────────────────────────────────────────────────────
-function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, language) {
-  return new Promise((resolve, reject) => {
-    const boundary = 'FFBound' + Date.now() + Math.random().toString(36).slice(2);
+async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, language, apiBaseUrl) {
+  if (!ApiClient.isUsableApiKey(apiKey, apiBaseUrl)) {
+    throw new Error(ApiClient.requiresApiKey(apiBaseUrl)
+      ? 'Groq API key is not configured — open Settings to add one'
+      : 'Provider API key contains invalid characters');
+  }
+  const boundary = 'FFBound' + Date.now() + Math.random().toString(36).slice(2);
 
-    // audioData is already a Buffer
-    if (!Buffer.isBuffer(audioData)) {
-      audioData = Buffer.from(audioData);
-    }
+  if (!Buffer.isBuffer(audioData)) audioData = Buffer.from(audioData);
+  console.log(`[Sileo] Transcribing ${audioData.length} bytes with ${model}`);
+  if (audioData.length < 100) throw new Error(`Audio too small (${audioData.length} bytes)`);
 
-    console.log(`[Sileo] Transcribing ${audioData.length} bytes with ${model}`);
-
-    if (audioData.length < 100) {
-      reject(new Error('Audio too small (' + audioData.length + ' bytes)'));
-      return;
-    }
-
-    // Write to temp file first, then read back — ensures clean binary
-    ensureTempDir();
-    const tmpFile = path.join(TEMP_DIR, `ff-${Date.now()}.webm`);
+  ensureTempDir();
+  const tmpFile = path.join(TEMP_DIR, `ff-${Date.now()}.webm`);
+  try {
+    // Write to a temp file first, then read back to ensure clean binary data.
     fs.writeFileSync(tmpFile, audioData);
     const fileData = fs.readFileSync(tmpFile);
 
-    // Build multipart body
     const parts = [];
     parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n`));
     parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n`));
-    // Pin the language when the user set one — prevents Whisper from mis-detecting
-    // silence/noise as another language (e.g. hallucinating Devanagari).
     const lang = (language || '').trim();
     if (lang) {
       parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\n${lang}\r\n`));
@@ -462,53 +524,33 @@ function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, language) {
     parts.push(fileData);
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
-    const body = Buffer.concat(parts);
+    const response = await ApiClient.requestMultipart(
+      apiBaseUrl,
+      'audio/transcriptions',
+      Buffer.concat(parts),
+      boundary,
+      apiKey,
+      timeoutMs || 30000,
+    );
 
-    const req = https.request({
-      hostname: 'api.groq.com',
-      path:     '/openai/v1/audio/transcriptions',
-      method:   'POST',
-      timeout:  timeoutMs || 30000,
-      headers: {
-        'Authorization':  `Bearer ${apiKey}`,
-        'Content-Type':   `multipart/form-data; boundary=${boundary}`,
-        'Content-Length':  body.length,
-      },
-    }, (res) => {
-      let raw = '';
-      res.on('data', c => raw += c);
-      res.on('end', () => {
-        // Cleanup temp file
-        try { fs.unlinkSync(tmpFile); } catch (_) {}
+    console.log(`[Sileo] Transcription response: ${response.statusCode}`);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      console.error('[Sileo] Transcription error body:', response.body.slice(0, 300));
+      throw new Error(`Transcription API ${response.statusCode}: ${response.body.slice(0, 150)}`);
+    }
 
-        console.log(`[Sileo] Groq response: ${res.statusCode}`);
-        if (res.statusCode !== 200) {
-          console.error('[Sileo] Groq error body:', raw.slice(0, 300));
-          reject(new Error(`Groq API ${res.statusCode}: ${raw.slice(0, 150)}`));
-          return;
-        }
-        try {
-          const json = JSON.parse(raw);
-          console.log('[Sileo] Transcript:', json.text?.slice(0, 80));
-          resolve(json.text || '');
-        } catch (e) {
-          reject(new Error('Invalid Groq response'));
-        }
-      });
-    });
-
-    req.on('timeout', () => {
-      try { fs.unlinkSync(tmpFile); } catch (_) {}
-      req.destroy();
-      reject(new Error('Transcription timed out'));
-    });
-    req.on('error', (e) => {
-      try { fs.unlinkSync(tmpFile); } catch (_) {}
-      reject(new Error('Network error: ' + e.message));
-    });
-    req.write(body);
-    req.end();
-  });
+    try {
+      const json = JSON.parse(response.body);
+      console.log('[Sileo] Transcript:', json.text?.slice(0, 80));
+      return json.text || '';
+    } catch (_) {
+      throw new Error('Invalid transcription response');
+    }
+  } catch (e) {
+    throw new Error(e.message || 'Transcription request failed');
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch (_) {}
+  }
 }
 
 // ─── Groq: LLM cleanup ───────────────────────────────────────────────────────
@@ -518,13 +560,13 @@ function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, language) {
 let liveBusy = false;
 ipcMain.on('audio-live-chunk', async (_, base64String) => {
   if (liveBusy || !isRecording) return; // skip overlapping / stale snapshots
-  if (!net.isOnline()) return;
+  if (!net.isOnline() || !ApiClient.isUsableApiKey(settings.groqApiKey, settings.apiBaseUrl)) return;
   liveBusy = true;
   try {
     const buf = Buffer.from(base64String, 'base64');
     // Use the fast turbo model for interim passes regardless of the final model.
     const interim = await transcribeAudioBuffer(
-      buf, settings.groqApiKey, 'whisper-large-v3-turbo', settings.transcriptionTimeoutMs, settings.language
+      buf, settings.groqApiKey, 'whisper-large-v3-turbo', settings.transcriptionTimeoutMs, settings.language, settings.apiBaseUrl
     );
     if (interim && interim.trim() && isRecording) {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -550,11 +592,12 @@ ipcMain.on('audio-base64-ready', async (_, base64String) => {
 
   try {
     assertOnline();
+    assertApiKey();
 
     const startTime = Date.now();
     // Run transcription and context gathering in parallel
     const [text, winInfo, selText, screenshotBase64] = await Promise.all([
-      transcribeAudioBuffer(audioBuffer, settings.groqApiKey, settings.transcriptionModel, settings.transcriptionTimeoutMs, settings.language),
+      transcribeAudioBuffer(audioBuffer, settings.groqApiKey, settings.transcriptionModel, settings.transcriptionTimeoutMs, settings.language, settings.apiBaseUrl),
       ContextService.getActiveWindowInfo(),
       ContextService.getSelectedText(),
       ContextService.getScreenScreenshot()
@@ -566,7 +609,7 @@ ipcMain.on('audio-base64-ready', async (_, base64String) => {
     if (screenshotBase64) {
       // While transcription is returning, we can quickly get the vision summary if it's not done yet.
       // But actually since we waited for transcription, let's just await the vision summary now.
-      visionSummary = await VisionService.analyzeVisualContext(settings.groqApiKey, screenshotBase64, winInfo);
+      visionSummary = await VisionService.analyzeVisualContext(settings.groqApiKey, screenshotBase64, winInfo, settings.apiBaseUrl);
     }
 
     const contextInfo = { window: winInfo, selectedText: selText, visionSummary };
@@ -718,6 +761,7 @@ ipcMain.on('overlay-error', (_, message) => {
 ipcMain.handle('get-settings', () => settings);
 ipcMain.handle('save-settings', (_, s) => saveSettings(s));
 ipcMain.handle('get-history', () => HistoryService.getHistory());
+ipcMain.handle('clear-history', () => HistoryService.clearHistory());
 ipcMain.handle('export-history', async () => {
   const { dialog } = require('electron');
   const { filePath } = await dialog.showSaveDialog({
@@ -793,42 +837,30 @@ ipcMain.handle('open-url', (_, url) => shell.openExternal(url));
 // API test
 ipcMain.handle('test-api', async () => {
   const apiKey = settings.groqApiKey;
-  if (!apiKey || !apiKey.startsWith('gsk_')) {
-    return { ok: false, error: 'Invalid API key. Must start with gsk_' };
+  if (!ApiClient.isUsableApiKey(apiKey, settings.apiBaseUrl)) {
+    return { ok: false, error: ApiClient.requiresApiKey(settings.apiBaseUrl) ? 'Invalid Groq API key. Must start with gsk_' : 'Invalid provider API key' };
   }
   if (!net.isOnline()) {
     return { ok: false, error: 'You are offline — check your connection' };
   }
-  return new Promise((resolve) => {
-    const payload = JSON.stringify({
-      model: settings.llmModel || 'llama-3.3-70b-versatile',
-      max_tokens: 5,
-      messages: [{ role: 'user', content: 'Say ok' }],
-    });
-    const req = https.request({
-      hostname: 'api.groq.com',
-      path:     '/openai/v1/chat/completions',
-      method:   'POST',
-      timeout:  10000,
-      headers: {
-        'Authorization':  `Bearer ${apiKey}`,
-        'Content-Type':   'application/json',
-        'Content-Length':  Buffer.byteLength(payload),
+  try {
+    const response = await ApiClient.requestJson(
+      settings.apiBaseUrl,
+      'chat/completions',
+      {
+        model: settings.llmModel || 'llama-3.3-70b-versatile',
+        max_tokens: 5,
+        messages: [{ role: 'user', content: 'Say ok' }],
       },
-    }, (res) => {
-      let raw = '';
-      res.on('data', c => raw += c);
-      res.on('end', () => {
-        resolve(res.statusCode === 200
-          ? { ok: true, message: 'Groq API connected!' }
-          : { ok: false, error: `API ${res.statusCode}: ${raw.slice(0, 100)}` });
-      });
-    });
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Timed out' }); });
-    req.on('error', (e) => resolve({ ok: false, error: e.message }));
-    req.write(payload);
-    req.end();
-  });
+      apiKey,
+      10000,
+    );
+    return response.statusCode >= 200 && response.statusCode < 300
+      ? { ok: true, message: 'API connected!' }
+      : { ok: false, error: `API ${response.statusCode}: ${response.body.slice(0, 100)}` };
+  } catch (e) {
+    return { ok: false, error: e.message || 'API request failed' };
+  }
 });
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────

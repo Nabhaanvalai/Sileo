@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --enable-logging",
+    "test": "node --test test/services.test.js",
     "icons": "node scripts/gen-icons.js",
     "dist": "npm run icons && electron-builder --win",
     "dist:dir": "npm run icons && electron-builder --win --dir"

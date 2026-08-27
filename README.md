@@ -48,6 +48,12 @@ Edit Mode lets you highlight existing text and transform it with a spoken instru
 
 There is no Sileo server, so Sileo does not store or retain your data. The only information that leaves your computer are API calls to your configured transcription and LLM provider.
 
+## Provider Configuration
+
+Sileo uses Groq by default through its OpenAI-compatible API. In **Settings → Provider**, enter the provider API base URL, API key when required, transcription model, and cleanup model. The default base URL is `https://api.groq.com/openai/v1`; local or self-hosted OpenAI-compatible services can use an `http://` or `https://` base URL and may omit the key if the service does not require authentication.
+
+Sileo sends audio to the transcription endpoint and, when enabled, sends the transcript plus optional context to the chat-completions endpoint. Screen context is optional and can include the active-window metadata, selected text, and a screenshot, so disable context-aware features when working with sensitive content.
+
 ## Custom Cleanup
 
 If you'd rather keep cleanup more literal and less context-aware, you can paste this simpler prompt into the custom system prompt setting:

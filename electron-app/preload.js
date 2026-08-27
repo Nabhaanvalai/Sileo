@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   close:          ()  => ipcRenderer.invoke('win-close'),
   testApi:        ()  => ipcRenderer.invoke('test-api'),
   getHistory:     ()  => ipcRenderer.invoke('get-history'),
+  clearHistory:   ()  => ipcRenderer.invoke('clear-history'),
   exportHistory:  ()  => ipcRenderer.invoke('export-history'),
   exportTestCase: ()  => ipcRenderer.invoke('export-test-case'),
   secureStorageAvailable: () => ipcRenderer.invoke('secure-storage-available'),

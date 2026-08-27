@@ -3,6 +3,7 @@ const path = require('path');
 const { app } = require('electron');
 
 let historyFilePath = '';
+let entrySequence = 0;
 
 /**
  * Initializes the history service
@@ -19,7 +20,7 @@ function addEntry(record) {
   if (!historyFilePath) init();
   
   const entry = {
-    id: Date.now().toString(),
+    id: `${Date.now()}-${++entrySequence}`,
     timestamp: new Date().toISOString(),
     ...record
   };
@@ -38,9 +39,9 @@ function addEntry(record) {
  */
 function getHistory(limit = 100) {
   if (!historyFilePath) init();
-  if (!fs.existsSync(historyFilePath)) return [];
 
   try {
+    if (!fs.existsSync(historyFilePath)) return [];
     const data = fs.readFileSync(historyFilePath, 'utf8');
     const lines = data.split('\n').filter(line => line.trim() !== '');
     
@@ -53,7 +54,10 @@ function getHistory(limit = 100) {
     }).filter(Boolean);
 
     // Sort newest first
-    records.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    records.sort((a, b) => {
+      const byTimestamp = new Date(b.timestamp) - new Date(a.timestamp);
+      return byTimestamp || String(b.id || '').localeCompare(String(a.id || ''), undefined, { numeric: true });
+    });
     
     return records.slice(0, limit);
   } catch (e) {
@@ -63,7 +67,22 @@ function getHistory(limit = 100) {
 }
 
 /**
- * Exports history to a Markdown file
+ * Deletes all persisted history while keeping the file available for future appends.
+ */
+function clearHistory() {
+  if (!historyFilePath) init();
+
+  try {
+    if (fs.existsSync(historyFilePath)) fs.truncateSync(historyFilePath, 0);
+    return { ok: true };
+  } catch (e) {
+    console.error('[HistoryService] Failed to clear history:', e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+/**
+ * Exports history to a Markdown file.
  */
 function exportToMarkdown(exportPath) {
   const records = getHistory(1000); // Export up to 1000 recent
@@ -86,5 +105,6 @@ module.exports = {
   init,
   addEntry,
   getHistory,
+  clearHistory,
   exportToMarkdown
 };
