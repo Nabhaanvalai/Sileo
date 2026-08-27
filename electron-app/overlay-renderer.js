@@ -3,6 +3,7 @@
 
 const pill      = document.getElementById('pill');
 const cancelBtn = document.getElementById('cancel-btn');
+const statusTxt = document.getElementById('status-txt');
 
 let mediaRecorder = null;
 let audioChunks   = [];
@@ -201,7 +202,7 @@ async function startRecording(opts) {
       const base64 = arrayBufferToBase64(arrayBuffer);
       console.log('[Overlay] Base64 length:', base64.length, '(from', arrayBuffer.byteLength, 'bytes)');
 
-      overlayAPI.sendAudioBase64(base64, arrayBuffer.byteLength);
+      overlayAPI.sendAudioBase64(base64);
     };
 
     mediaRecorder.onerror = (e) => {
@@ -289,9 +290,13 @@ function setState({ recording, status }) {
   stopTimer();
   stopBarAnimation();
 
+  // Show short label in the pill for every non-recording state
+  const label = (status || '').replace(/^⚠\s*/, '');
+  if (statusTxt) statusTxt.textContent = label.slice(0, 22);
+
   if (status && status.startsWith('Done')) {
     pill.className = 'pill done';
-  } else if (status && (status.startsWith('⚠') || status.includes('detected'))) {
+  } else if (status && (status.startsWith('⚠') || status.includes('detected') || status.includes('denied'))) {
     pill.className = 'pill error';
   } else {
     pill.className = 'pill processing';

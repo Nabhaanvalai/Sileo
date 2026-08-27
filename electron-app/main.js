@@ -40,6 +40,7 @@ const DEFAULTS = {
   // Never ship credentials in source; users configure the key during onboarding/settings.
   groqApiKey:         process.env.GROQ_API_KEY || '',
   apiBaseUrl:         ApiClient.DEFAULT_API_BASE_URL,
+  transcriptionApiUrl: '',
   transcriptionModel: 'whisper-large-v3',
   llmModel:           'llama-3.3-70b-versatile',
   hotkey:             'F9',
@@ -62,6 +63,9 @@ const DEFAULTS = {
   pushToTalkKey:          'RightCtrl', // key to hold while speaking
   liveTranscription:      false,  // chunked progressive transcription feedback
   onboarded:              false,  // first-run setup wizard completed
+  editModeEnabled:        true,   // allow voice editing of selected text
+  developerMode:          false,  // preserve code identifiers and commands
+  autoLearnVocab:         false,  // learn corrected words from clipboard edits
 };
 
 let settings = { ...DEFAULTS };
@@ -73,6 +77,21 @@ function clampInt(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.round(n)));
 }
 
+function normalizeApiUrl(value, fallback) {
+  const raw = String(value || '').trim();
+  if (!raw) return fallback;
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('invalid API URL');
+    parsed.hash = '';
+    parsed.search = '';
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '');
+    return parsed.toString().replace(/\/$/, '');
+  } catch (_) {
+    return fallback;
+  }
+}
+
 function normalizeSettings(input) {
   const merged = {
     ...DEFAULTS,
@@ -80,30 +99,22 @@ function normalizeSettings(input) {
   };
 
   const stringFields = [
-    'groqApiKey', 'apiBaseUrl', 'transcriptionModel', 'llmModel', 'hotkey', 'language',
+    'groqApiKey', 'apiBaseUrl', 'transcriptionApiUrl', 'transcriptionModel', 'llmModel', 'hotkey', 'language',
     'customPrompt', 'customVocabulary', 'voiceMacrosText', 'secondHotkey',
     'pushToTalkKey',
   ];
   for (const field of stringFields) {
     if (typeof merged[field] !== 'string') merged[field] = DEFAULTS[field] || '';
   }
-  for (const field of ['postProcessing', 'injectText', 'startMinimized', 'openAtLogin', 'notifyOnDone', 'toneAdaptation', 'vocabularyNotify', 'secureApiKey', 'pushToTalkEnabled', 'liveTranscription', 'onboarded']) {
+  for (const field of ['postProcessing', 'injectText', 'startMinimized', 'openAtLogin', 'notifyOnDone', 'toneAdaptation', 'vocabularyNotify', 'secureApiKey', 'pushToTalkEnabled', 'liveTranscription', 'onboarded', 'editModeEnabled', 'developerMode', 'autoLearnVocab']) {
     merged[field] = merged[field] === true;
   }
 
   merged.transcriptionTimeoutMs = clampInt(merged.transcriptionTimeoutMs, DEFAULTS.transcriptionTimeoutMs, 1000, 120000);
   merged.llmTimeoutMs = clampInt(merged.llmTimeoutMs, DEFAULTS.llmTimeoutMs, 1000, 120000);
   merged.groqApiKey = merged.groqApiKey.trim();
-  try {
-    const parsedBase = new URL(merged.apiBaseUrl);
-    if (!['http:', 'https:'].includes(parsedBase.protocol) || parsedBase.username || parsedBase.password) throw new Error('invalid API base URL');
-    parsedBase.hash = '';
-    parsedBase.search = '';
-    parsedBase.pathname = parsedBase.pathname.replace(/\/+$/, '');
-    merged.apiBaseUrl = parsedBase.toString().replace(/\/$/, '');
-  } catch (_) {
-    merged.apiBaseUrl = DEFAULTS.apiBaseUrl;
-  }
+  merged.apiBaseUrl = normalizeApiUrl(merged.apiBaseUrl, DEFAULTS.apiBaseUrl);
+  merged.transcriptionApiUrl = normalizeApiUrl(merged.transcriptionApiUrl, '');
   merged.hotkey = merged.hotkey.trim() || DEFAULTS.hotkey;
   merged.secondHotkey = merged.secondHotkey.trim();
   merged.pushToTalkKey = merged.pushToTalkKey.trim() || DEFAULTS.pushToTalkKey;
@@ -493,8 +504,66 @@ async function injectTextIntoActiveWindow(text) {
   });
 }
 
-// ─── Groq: Transcription ─────────────────────────────────────────────────────
-async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, language, apiBaseUrl) {
+// ─── Clipboard watching for auto-learning vocabulary ──────────────────────────
+let learnInterval = null;
+let lastInjectedText = '';
+
+function startClipboardWatcher(injectedText) {
+  if (!settings.autoLearnVocab || !injectedText?.trim()) return;
+  if (learnInterval) clearInterval(learnInterval);
+
+  lastInjectedText = injectedText.trim();
+  const startedAt = Date.now();
+  let previousClip = '';
+  try { previousClip = clipboard.readText() || ''; } catch (_) {}
+  previousClip = previousClip.trim();
+
+  learnInterval = setInterval(() => {
+    if (Date.now() - startedAt > 25000) {
+      clearInterval(learnInterval);
+      learnInterval = null;
+      return;
+    }
+
+    let currentClip = '';
+    try { currentClip = clipboard.readText() || ''; } catch (_) {}
+    currentClip = currentClip.trim();
+    if (currentClip && currentClip !== previousClip && currentClip !== lastInjectedText) {
+      previousClip = currentClip;
+      learnVocabularyFromCorrection(lastInjectedText, currentClip);
+    }
+  }, 800);
+}
+
+function learnVocabularyFromCorrection(oldText, newText) {
+  const cleanWords = (text) => String(text || '').toLowerCase()
+    .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, '')
+    .split(/\s+/).filter(Boolean);
+  const oldWords = new Set(cleanWords(oldText));
+  const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'up', 'about', 'into', 'over', 'after', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'them', 'me', 'him', 'her', 'us', 'my', 'your', 'his', 'its', 'our', 'their', 'this', 'that', 'these', 'those']);
+  const learned = [];
+
+  for (const originalWord of String(newText || '').split(/\s+/).filter(Boolean)) {
+    const normalized = originalWord.replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, '').trim();
+    const comparable = normalized.toLowerCase();
+    if (comparable.length < 2 || oldWords.has(comparable) || stopWords.has(comparable)) continue;
+    if (!learned.some(word => word.toLowerCase() === comparable)) learned.push(normalized);
+  }
+
+  if (!learned.length) return;
+  const existing = (settings.customVocabulary || '').split(/[,\n]/).map(value => value.trim()).filter(Boolean);
+  const additions = learned.filter(word => !existing.some(value => value.toLowerCase() === word.toLowerCase()));
+  if (!additions.length) return;
+
+  saveSettings({ customVocabulary: [...existing, ...additions].join(', ') });
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('settings-imported', settings);
+  if (settings.notifyOnDone && Notification.isSupported()) {
+    new Notification({ title: 'Sileo learned new words', body: `Added to vocabulary: ${additions.join(', ')}`, silent: true }).show();
+  }
+}
+
+// ─── Groq / OpenAI-compatible: Transcription ─────────────────────────────────
+async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, language, apiBaseUrl, whisperPrompt) {
   if (!ApiClient.isUsableApiKey(apiKey, apiBaseUrl)) {
     throw new Error(ApiClient.requiresApiKey(apiBaseUrl)
       ? 'Groq API key is not configured — open Settings to add one'
@@ -519,6 +588,10 @@ async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, langua
     const lang = (language || '').trim();
     if (lang) {
       parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\n${lang}\r\n`));
+    }
+    if (whisperPrompt && whisperPrompt.trim()) {
+      const safePrompt = String(whisperPrompt).slice(0, 224);
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n${safePrompt}\r\n`));
     }
     parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="recording.webm"\r\nContent-Type: audio/webm\r\n\r\n`));
     parts.push(fileData);
@@ -560,13 +633,14 @@ async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, langua
 let liveBusy = false;
 ipcMain.on('audio-live-chunk', async (_, base64String) => {
   if (liveBusy || !isRecording) return; // skip overlapping / stale snapshots
-  if (!net.isOnline() || !ApiClient.isUsableApiKey(settings.groqApiKey, settings.apiBaseUrl)) return;
+  const txUrl = settings.transcriptionApiUrl || settings.apiBaseUrl;
+  if (!net.isOnline() || !ApiClient.isUsableApiKey(settings.groqApiKey, txUrl)) return;
   liveBusy = true;
   try {
     const buf = Buffer.from(base64String, 'base64');
     // Use the fast turbo model for interim passes regardless of the final model.
     const interim = await transcribeAudioBuffer(
-      buf, settings.groqApiKey, 'whisper-large-v3-turbo', settings.transcriptionTimeoutMs, settings.language, settings.apiBaseUrl
+      buf, settings.groqApiKey, 'whisper-large-v3-turbo', settings.transcriptionTimeoutMs, settings.language, txUrl
     );
     if (interim && interim.trim() && isRecording) {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -595,12 +669,24 @@ ipcMain.on('audio-base64-ready', async (_, base64String) => {
     assertApiKey();
 
     const startTime = Date.now();
-    // Run transcription and context gathering in parallel
-    const [text, winInfo, selText, screenshotBase64] = await Promise.all([
-      transcribeAudioBuffer(audioBuffer, settings.groqApiKey, settings.transcriptionModel, settings.transcriptionTimeoutMs, settings.language, settings.apiBaseUrl),
+    const txUrl = settings.transcriptionApiUrl || settings.apiBaseUrl;
+
+    // Gather context first so vocabulary, window titles, and selected text can bias Whisper.
+    const [winInfo, selText] = await Promise.all([
       ContextService.getActiveWindowInfo(),
       ContextService.getSelectedText(),
-      ContextService.getScreenScreenshot()
+    ]);
+    const promptParts = [];
+    const customVocab = (settings.customVocabulary || '').trim();
+    if (customVocab) promptParts.push(customVocab);
+    if (winInfo?.title) promptParts.push(winInfo.title);
+    if (selText) promptParts.push(selText);
+    const whisperPrompt = promptParts.join(', ').slice(0, 224);
+
+    // Transcribe and capture the screen in parallel after context is available.
+    const [text, screenshotBase64] = await Promise.all([
+      transcribeAudioBuffer(audioBuffer, settings.groqApiKey, settings.transcriptionModel, settings.transcriptionTimeoutMs, settings.language, txUrl, whisperPrompt),
+      ContextService.getScreenScreenshot(),
     ]);
 
     const whisperLatency = Date.now() - startTime;
@@ -705,6 +791,7 @@ ipcMain.on('audio-base64-ready', async (_, base64String) => {
     } else {
       clipboard.writeText(finalText);
     }
+    if (settings.autoLearnVocab) startClipboardWatcher(finalText);
 
     // Notification
     if (settings.notifyOnDone && Notification.isSupported()) {
@@ -760,6 +847,50 @@ ipcMain.on('overlay-error', (_, message) => {
 // ─── IPC: Settings & Tools ─────────────────────────────────────────────────────
 ipcMain.handle('get-settings', () => settings);
 ipcMain.handle('save-settings', (_, s) => saveSettings(s));
+ipcMain.handle('export-settings', async () => {
+  const { dialog } = require('electron');
+  const { filePath } = await dialog.showSaveDialog({
+    title: 'Export Sileo Settings',
+    defaultPath: 'Sileo-settings.json',
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (!filePath) return { ok: false, error: null };
+
+  try {
+    const backup = { ...settings, groqApiKey: '', secureApiKey: false };
+    fs.writeFileSync(filePath, JSON.stringify(backup, null, 2), 'utf8');
+    return { ok: true, filePath };
+  } catch (e) {
+    console.error('[Sileo] Settings export error:', e.message);
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('import-settings', async () => {
+  const { dialog } = require('electron');
+  const { filePaths } = await dialog.showOpenDialog({
+    title: 'Import Sileo Settings',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (!filePaths?.[0]) return { ok: false, error: null };
+
+  try {
+    const imported = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'));
+    if (!imported || typeof imported !== 'object' || Array.isArray(imported)) {
+      throw new Error('Settings file must contain a JSON object');
+    }
+    const result = saveSettings(imported);
+    if (result.ok && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('settings-imported', settings);
+    }
+    return result;
+  } catch (e) {
+    console.error('[Sileo] Settings import error:', e.message);
+    return { ok: false, error: `Invalid settings file: ${e.message}` };
+  }
+});
+
 ipcMain.handle('get-history', () => HistoryService.getHistory());
 ipcMain.handle('clear-history', () => HistoryService.clearHistory());
 ipcMain.handle('export-history', async () => {

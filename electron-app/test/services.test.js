@@ -38,11 +38,14 @@ test('voice macros normalize punctuation and match exact spoken triggers', () =>
     VoiceMacroService.matchMacro('Insert my email.', settings),
     { trigger: 'insert my email', snippet: 'alex@example.com' },
   );
-  assert.equal(VoiceMacroService.matchMacro('insert my email please', settings), null);
+  assert.deepEqual(
+    VoiceMacroService.matchMacro('insert my email please', settings),
+    { trigger: 'insert my email', snippet: 'alex@example.com' },
+  );
 });
 
 test('vocabulary matching is case-insensitive and whole-word aware', () => {
-  const settings = { vocabulary: 'Sileo, API key\nGroq' };
+  const settings = { customVocabulary: 'Sileo, API key\nGroq' };
 
   assert.deepEqual(VocabularyService.parseVocabulary(settings), ['Sileo', 'API key', 'Groq']);
   assert.deepEqual(
@@ -68,6 +71,24 @@ test('prompt preview handles missing window context and legacy vocabulary settin
   assert.match(prompt, /Custom Vocabulary/);
   assert.match(prompt, /Sileo/);
   assert.doesNotMatch(prompt, /Active App: undefined/);
+});
+
+test('edit mode can be disabled and developer mode preserves code identifiers', () => {
+  const normalPrompt = PostProcessingService.previewPrompt(
+    'replace this',
+    { editModeEnabled: false, toneAdaptation: true },
+    { selectedText: 'original text', window: { processName: 'Code', title: 'VS Code' } },
+  );
+  assert.match(normalPrompt, /RAW: replace this/);
+  assert.doesNotMatch(normalPrompt, /Instruction: replace this/);
+
+  const developerPrompt = PostProcessingService.previewPrompt(
+    'use my_variable',
+    { developerMode: true },
+    null,
+  );
+  assert.match(developerPrompt, /Developer mode/);
+  assert.match(developerPrompt, /camelCase/);
 });
 
 test('history service persists, orders, and clears records', () => {

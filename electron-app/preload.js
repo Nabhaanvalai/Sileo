@@ -16,7 +16,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   secureStorageAvailable: () => ipcRenderer.invoke('secure-storage-available'),
   pttAvailable:   ()  => ipcRenderer.invoke('ptt-available'),
   markOnboarded:  ()  => ipcRenderer.invoke('mark-onboarded'),
-  onNewTranscript:(cb) => ipcRenderer.on('new-transcript', (_, t) => cb(t)),
-  onPipelineDebug:(cb) => ipcRenderer.on('pipeline-debug', (_, d) => cb(d)),
-  onLiveTranscript:(cb) => ipcRenderer.on('live-transcript', (_, t) => cb(t)),
+  // Settings backup / restore
+  exportSettings: ()  => ipcRenderer.invoke('export-settings'),
+  importSettings: ()  => ipcRenderer.invoke('import-settings'),
+  // Events
+  onNewTranscript: (cb) => ipcRenderer.on('new-transcript',    (_, t) => cb(t)),
+  onPipelineDebug: (cb) => ipcRenderer.on('pipeline-debug',    (_, d) => cb(d)),
+  onLiveTranscript:(cb) => ipcRenderer.on('live-transcript',   (_, t) => cb(t)),
+  onSettingsImported:(cb)=> ipcRenderer.on('settings-imported', (_, s) => cb(s)),
 });
