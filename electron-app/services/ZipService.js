@@ -7,8 +7,6 @@
  * Good enough for bundling a handful of small debug files (JSON, PNG, webm).
  */
 
-const zlib = require('zlib');
-
 // CRC-32 table (computed once at module load).
 const CRC_TABLE = (() => {
   const table = new Int32Array(256);
@@ -107,6 +105,3 @@ function createZip(entries) {
 }
 
 module.exports = { createZip, crc32 };
-
-// Touch zlib so linters don't complain if STORE-only is later swapped for DEFLATE.
-void zlib;

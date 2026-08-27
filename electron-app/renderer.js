@@ -45,6 +45,12 @@ const togSecure    = document.getElementById('tog-secure');
 const togVocabNotify = document.getElementById('tog-vocab-notify');
 const togLive      = document.getElementById('tog-live');
 const togTone      = document.getElementById('tog-tone');
+const togEditMode  = document.getElementById('tog-edit-mode');
+const togDevMode   = document.getElementById('tog-dev-mode');
+const togAutoLearn = document.getElementById('tog-auto-learn');
+const inpCustomPrompt = document.getElementById('inp-custom-prompt');
+const inpApiBaseUrl   = document.getElementById('inp-api-base-url');
+const inpTxApiUrl     = document.getElementById('inp-tx-api-url');
 const hintSecure   = document.getElementById('hint-secure');
 const btnSave      = document.getElementById('btn-save');
 const saveMsg      = document.getElementById('save-msg');
@@ -183,13 +189,6 @@ function refreshStats() {
 }
 
 // ─── History ──────────────────────────────────────────────────────────────────
-// Backend now handles persistent history
-async function refreshHistoryFromBackend() {
-  history = await electronAPI.getHistory();
-  rebuildHistory();
-  refreshStats();
-}
-
 function rebuildHistory() {
   if (history.length === 0) {
     historyList.innerHTML = `
@@ -383,7 +382,7 @@ function populateSettings() {
   inpKey.value      = settings.groqApiKey         || '';
   if (inpApiBase) inpApiBase.value = settings.apiBaseUrl || 'https://api.groq.com/openai/v1';
   inpLang.value     = settings.language ?? 'en';
-  inpVocab.value    = settings.vocabulary          || '';
+  inpVocab.value    = settings.customVocabulary || '';
   togPP.checked     = settings.postProcessing     !== false;
   togInject.checked = settings.injectText         !== false;
   togTray.checked   = settings.startMinimized     !== false;
@@ -395,7 +394,15 @@ function populateSettings() {
   togVocabNotify.checked = settings.vocabularyNotify === true;
   togLive.checked        = settings.liveTranscription === true;
   if (togTone) togTone.checked = settings.toneAdaptation !== false;
+  if (togEditMode) {
+    togEditMode.checked = settings.editModeEnabled !== false;
+  }
+  if (togDevMode)    togDevMode.checked    = settings.developerMode  === true;
+  if (togAutoLearn)  togAutoLearn.checked  = settings.autoLearnVocab === true;
   if (inpMacros) inpMacros.value = settings.voiceMacrosText || '';
+  if (inpCustomPrompt) inpCustomPrompt.value = settings.customPrompt || '';
+  if (inpApiBaseUrl) inpApiBaseUrl.value = settings.apiBaseUrl || '';
+  if (inpTxApiUrl) inpTxApiUrl.value = settings.transcriptionApiUrl || '';
   setSel(inpHotkey,  settings.hotkey             || 'F9');
   setSel(inpHotkey2, settings.secondHotkey       || '');
   if (togPtt)    togPtt.checked = settings.pushToTalkEnabled === true;
@@ -444,7 +451,42 @@ function setupSettingsUI() {
   });
   btnSave.addEventListener('click', saveSettings);
 
-  // API test button
+  // Settings export / import
+  const btnExportSettings = document.getElementById('btn-export-settings');
+  const btnImportSettings = document.getElementById('btn-import-settings');
+  const settingsIoMsg     = document.getElementById('settings-io-msg');
+
+  function flashIoMsg(text, isError) {
+    if (!settingsIoMsg) return;
+    settingsIoMsg.textContent = text;
+    settingsIoMsg.style.color = isError ? '#f87171' : '#6ee7b7';
+    setTimeout(() => { settingsIoMsg.textContent = ''; }, 3000);
+  }
+
+  if (btnExportSettings) {
+    btnExportSettings.addEventListener('click', async () => {
+      const r = await electronAPI.exportSettings();
+      flashIoMsg(r.ok ? `✓ Exported to ${r.filePath}` : `✗ ${r.error || 'Cancelled'}`, !r.ok);
+    });
+  }
+  if (btnImportSettings) {
+    btnImportSettings.addEventListener('click', async () => {
+      const r = await electronAPI.importSettings();
+      if (r.ok) {
+        flashIoMsg('✓ Settings imported — reloading…', false);
+      } else if (r.error) {
+        flashIoMsg(`✗ ${r.error}`, true);
+      }
+    });
+  }
+
+  // When main process hot-reloads after import, refresh the UI
+  electronAPI.onSettingsImported((imported) => {
+    settings = imported;
+    populateSettings();
+    flashIoMsg('✓ Settings imported!', false);
+  });
+
   if (btnTestApi) {
     btnTestApi.addEventListener('click', testApiConnection);
   }
@@ -455,7 +497,7 @@ async function saveSettings() {
     groqApiKey:         inpKey.value.trim(),
     apiBaseUrl:         inpApiBase ? inpApiBase.value.trim() : 'https://api.groq.com/openai/v1',
     language:           inpLang.value.trim(),
-    vocabulary:         inpVocab.value,
+    customVocabulary:   inpVocab.value,
     postProcessing:     togPP.checked,
     injectText:         togInject.checked,
     startMinimized:     togTray.checked,
@@ -474,6 +516,12 @@ async function saveSettings() {
     liveTranscription:  togLive ? togLive.checked : false,
     toneAdaptation:     togTone ? togTone.checked : true,
     voiceMacrosText:    inpMacros ? inpMacros.value : '',
+    editModeEnabled:    togEditMode ? togEditMode.checked : true,
+    developerMode:      togDevMode ? togDevMode.checked : false,
+    autoLearnVocab:     togAutoLearn ? togAutoLearn.checked : false,
+    customPrompt:       inpCustomPrompt ? inpCustomPrompt.value.trim() : '',
+    apiBaseUrl:         inpApiBaseUrl ? inpApiBaseUrl.value.trim() : '',
+    transcriptionApiUrl: inpTxApiUrl ? inpTxApiUrl.value.trim() : '',
   };
   const r = await electronAPI.saveSettings(s);
   if (r?.ok) {

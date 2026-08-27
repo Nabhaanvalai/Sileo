@@ -9,7 +9,9 @@
     "test": "node --test test/services.test.js",
     "icons": "node scripts/gen-icons.js",
     "dist": "npm run icons && electron-builder --win",
-    "dist:dir": "npm run icons && electron-builder --win --dir"
+    "dist:dir": "npm run icons && electron-builder --win --dir",
+    "dist:skip-rebuild": "npm run icons && electron-builder --win --skip-rebuild",
+    "dist:portable": "npm run icons && electron-builder --win portable --skip-rebuild"
   },
   "keywords": [
     "dictation",
@@ -33,6 +35,8 @@
     "appId": "ai.sileo.windows",
     "productName": "Sileo",
     "copyright": "Copyright © 2026 Sileo",
+    "nodeGypRebuild": false,
+    "npmRebuild": false,
     "directories": {
       "buildResources": "build",
       "output": "dist"

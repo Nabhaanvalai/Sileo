@@ -10,7 +10,7 @@
  */
 
 function parseVocabulary(settings) {
-  const raw = settings.customVocabulary || settings.vocabulary || '';
+  const raw = settings.customVocabulary || '';
   return String(raw)
     .split(/[,\n]/)
     .map(t => t.trim())

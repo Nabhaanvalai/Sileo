@@ -6,7 +6,11 @@ const {
 } = require('electron');
 const path  = require('path');
 const fs    = require('fs');
+<<<<<<< Updated upstream
 const os    = require('os');
+=======
+const https = require('https');
+>>>>>>> Stashed changes
 const { exec } = require('child_process');
 const ContextService = require('./services/ContextService');
 const VisionService = require('./services/VisionService');
@@ -47,7 +51,6 @@ const DEFAULTS = {
   postProcessing:     true,
   injectText:         true,
   startMinimized:     false,
-  customPrompt:       '',
   customVocabulary:   '',
   toneAdaptation:     true,   // adapt formality to the active app (Slack casual, Gmail formal)
   openAtLogin:            false,
@@ -62,11 +65,22 @@ const DEFAULTS = {
   pushToTalkKey:          'RightCtrl', // key to hold while speaking
   liveTranscription:      false,  // chunked progressive transcription feedback
   onboarded:              false,  // first-run setup wizard completed
+  // OpenAI-compatible custom endpoints (empty = use Groq defaults)
+  apiBaseUrl:             '',     // e.g. http://localhost:11434/v1 for Ollama
+  transcriptionApiUrl:    '',     // separate endpoint for Whisper (if different from LLM)
+  // Custom system prompt / Edit Mode
+  customPrompt:           '',     // appended to the default cleanup prompt
+  editModeEnabled:        true,   // allow voice editing of selected text
+  // Developer mode: camelCase/snake_case-aware LLM prompt
+  developerMode:          false,
+  // Auto-learn: new words from user clipboard edits are added back to vocabulary
+  autoLearnVocab:         false,
 };
 
 let settings = { ...DEFAULTS };
 let settingsPath = '';
 
+<<<<<<< Updated upstream
 function clampInt(value, fallback, min, max) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -128,6 +142,8 @@ function cleanupTempFiles() {
   } catch (_) {}
 }
 
+=======
+>>>>>>> Stashed changes
 // ─── Settings ─────────────────────────────────────────────────────────────────
 function loadSettings() {
   try {
@@ -261,9 +277,9 @@ function createOverlay() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
 
   overlayWindow = new BrowserWindow({
-    width:       92,
-    height:      38,
-    x:           Math.floor((width - 92) / 2),
+    width:       110,
+    height:      46,
+    x:           Math.floor((width - 110) / 2),
     y:           0,
     frame:       false,
     transparent: true,
@@ -493,6 +509,7 @@ async function injectTextIntoActiveWindow(text) {
   });
 }
 
+<<<<<<< Updated upstream
 // ─── Groq: Transcription ─────────────────────────────────────────────────────
 async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, language, apiBaseUrl) {
   if (!ApiClient.isUsableApiKey(apiKey, apiBaseUrl)) {
@@ -501,11 +518,126 @@ async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, langua
       : 'Provider API key contains invalid characters');
   }
   const boundary = 'FFBound' + Date.now() + Math.random().toString(36).slice(2);
+=======
+// ─── Clipboard watching for auto-learning vocabulary ──────────────────────────
+let learnInterval = null;
+let lastInjectedText = '';
+let lastInjectedTime = 0;
+
+function startClipboardWatcher(injectedText) {
+  if (!settings.autoLearnVocab) return;
+
+  // Clear any existing watcher
+  if (learnInterval) {
+    clearInterval(learnInterval);
+    learnInterval = null;
+  }
+
+  lastInjectedText = injectedText.trim();
+  lastInjectedTime = Date.now();
+
+  let previousClip = '';
+  try { previousClip = clipboard.readText() || ''; } catch (e) {}
+  previousClip = previousClip.trim();
+
+  const startTime = Date.now();
+  learnInterval = setInterval(() => {
+    // Stop watching after 25 seconds
+    if (Date.now() - startTime > 25000) {
+      clearInterval(learnInterval);
+      learnInterval = null;
+      return;
+    }
+
+    let currentClip = '';
+    try { currentClip = clipboard.readText() || ''; } catch (e) {}
+    currentClip = currentClip.trim();
+
+    if (currentClip && currentClip !== previousClip && currentClip !== lastInjectedText) {
+      previousClip = currentClip;
+      handleCorrection(lastInjectedText, currentClip);
+    }
+  }, 800);
+}
+
+function handleCorrection(oldText, newText) {
+  if (!oldText || !newText) return;
+
+  // Clean punctuation from texts for word comparison
+  const clean = (t) => t.toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "").split(/\s+/).filter(Boolean);
+  const oldWordsClean = clean(oldText);
+  const oldWordsSet = new Set(oldWordsClean);
+
+  const learnedWords = [];
+  // Tokenize original text preserving capitalization
+  const originalWords = newText.split(/\s+/).filter(Boolean);
+
+  for (const origWord of originalWords) {
+    // Strip punctuation to check
+    const wordClean = origWord.toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
+    if (!wordClean || wordClean.length < 2) continue;
+
+    // Check if this word is missing from the old text
+    if (!oldWordsSet.has(wordClean)) {
+      // Ignore common English stopwords
+      const STOP_WORDS = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'up', 'about', 'into', 'over', 'after', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'them', 'me', 'him', 'her', 'us', 'my', 'your', 'his', 'its', 'our', 'their', 'this', 'that', 'these', 'those']);
+      if (STOP_WORDS.has(wordClean)) continue;
+
+      const finalWord = origWord.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "").trim();
+      if (finalWord.length >= 2 && !learnedWords.includes(finalWord)) {
+        learnedWords.push(finalWord);
+      }
+    }
+  }
+
+  if (learnedWords.length > 0) {
+    console.log('[Sileo] Detected clipboard correction! Learning words:', learnedWords);
+
+    const existing = (settings.customVocabulary || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+    let updated = false;
+
+    for (const word of learnedWords) {
+      if (!existing.some(e => e.toLowerCase() === word.toLowerCase())) {
+        existing.push(word);
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      const newVocab = existing.join(', ');
+      saveSettings({ customVocabulary: newVocab });
+
+      // Notify the renderer to update settings UI
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('settings-imported', settings);
+      }
+
+      // Show notification
+      const { Notification } = require('electron');
+      if (Notification.isSupported()) {
+        new Notification({
+          title: 'Sileo Learned New Word',
+          body: `Added to vocabulary: ${learnedWords.join(', ')}`,
+          silent: true
+        }).show();
+      }
+    }
+  }
+}
+
+// ─── Groq / OpenAI-compatible: Transcription ─────────────────────────────────
+// whisperPrompt: optional text to bias Whisper spelling (vocabulary words + context).
+// Passing vocab here is the primary fix for single-word accuracy and custom spellings.
+function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, language, customBaseUrl, whisperPrompt) {
+  return new Promise((resolve, reject) => {
+    const boundary = 'FFBound' + Date.now() + Math.random().toString(36).slice(2);
+>>>>>>> Stashed changes
 
   if (!Buffer.isBuffer(audioData)) audioData = Buffer.from(audioData);
   console.log(`[Sileo] Transcribing ${audioData.length} bytes with ${model}`);
   if (audioData.length < 100) throw new Error(`Audio too small (${audioData.length} bytes)`);
 
+<<<<<<< Updated upstream
   ensureTempDir();
   const tmpFile = path.join(TEMP_DIR, `ff-${Date.now()}.webm`);
   try {
@@ -513,6 +645,16 @@ async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, langua
     fs.writeFileSync(tmpFile, audioData);
     const fileData = fs.readFileSync(tmpFile);
 
+=======
+    console.log(`[Sileo] Transcribing ${audioData.length} bytes with ${model}`);
+
+    if (audioData.length < 100) {
+      reject(new Error('Audio too small (' + audioData.length + ' bytes)'));
+      return;
+    }
+
+    // Build multipart body
+>>>>>>> Stashed changes
     const parts = [];
     parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n`));
     parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n`));
@@ -520,8 +662,17 @@ async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, langua
     if (lang) {
       parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\n${lang}\r\n`));
     }
+    // Whisper prompt: biases the model toward specific spellings.
+    // Critical for:
+    //   - Single-word clips (Whisper needs context or it hallucinates)
+    //   - Custom vocabulary (proper nouns, brand names, jargon)
+    //   - Window title words (nearby context improves accuracy)
+    if (whisperPrompt && whisperPrompt.trim()) {
+      const safePrompt = String(whisperPrompt).slice(0, 224); // Whisper prompt max ~224 tokens
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n${safePrompt}\r\n`));
+    }
     parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="recording.webm"\r\nContent-Type: audio/webm\r\n\r\n`));
-    parts.push(fileData);
+    parts.push(audioData);
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
     const response = await ApiClient.requestMultipart(
@@ -533,6 +684,7 @@ async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, langua
       timeoutMs || 30000,
     );
 
+<<<<<<< Updated upstream
     console.log(`[Sileo] Transcription response: ${response.statusCode}`);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       console.error('[Sileo] Transcription error body:', response.body.slice(0, 300));
@@ -551,6 +703,63 @@ async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, langua
   } finally {
     try { fs.unlinkSync(tmpFile); } catch (_) {}
   }
+=======
+    // Resolve hostname + path from optional custom URL, fallback to Groq.
+    let hostname = 'api.groq.com';
+    let reqPath  = '/openai/v1/audio/transcriptions';
+    let port     = undefined;
+    let useHttps = true;
+    if (customBaseUrl && customBaseUrl.trim()) {
+      try {
+        const u = new URL(customBaseUrl.trim().replace(/\/$/, '') + '/audio/transcriptions');
+        hostname  = u.hostname;
+        reqPath   = u.pathname;
+        port      = u.port ? parseInt(u.port, 10) : undefined;
+        useHttps  = u.protocol === 'https:';
+      } catch (_) { /* malformed URL — fall through to Groq */ }
+    }
+
+    const reqModule = useHttps ? require('https') : require('http');
+    const req = reqModule.request({
+      hostname, path: reqPath, port,
+      method:   'POST',
+      timeout:  timeoutMs || 30000,
+      headers: {
+        'Authorization':  `Bearer ${apiKey}`,
+        'Content-Type':   `multipart/form-data; boundary=${boundary}`,
+        'Content-Length':  body.length,
+      },
+    }, (res) => {
+      let raw = '';
+      res.on('data', c => raw += c);
+      res.on('end', () => {
+        console.log(`[Sileo] Transcription response: ${res.statusCode}`);
+        if (res.statusCode !== 200) {
+          console.error('[Sileo] Transcription error body:', raw.slice(0, 300));
+          reject(new Error(`Transcription API ${res.statusCode}: ${raw.slice(0, 150)}`));
+          return;
+        }
+        try {
+          const json = JSON.parse(raw);
+          console.log('[Sileo] Transcript:', json.text?.slice(0, 80));
+          resolve(json.text || '');
+        } catch (e) {
+          reject(new Error('Invalid transcription response'));
+        }
+      });
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('Transcription timed out'));
+    });
+    req.on('error', (e) => {
+      reject(new Error('Network error: ' + e.message));
+    });
+    req.write(body);
+    req.end();
+  });
+>>>>>>> Stashed changes
 }
 
 // ─── Groq: LLM cleanup ───────────────────────────────────────────────────────
@@ -559,14 +768,23 @@ async function transcribeAudioBuffer(audioData, apiKey, model, timeoutMs, langua
 // ─── IPC: Live (interim) transcription ───────────────────────────────────────
 let liveBusy = false;
 ipcMain.on('audio-live-chunk', async (_, base64String) => {
+<<<<<<< Updated upstream
   if (liveBusy || !isRecording) return; // skip overlapping / stale snapshots
   if (!net.isOnline() || !ApiClient.isUsableApiKey(settings.groqApiKey, settings.apiBaseUrl)) return;
+=======
+  if (liveBusy || !isRecording) return;
+  if (!net.isOnline()) return;
+>>>>>>> Stashed changes
   liveBusy = true;
   try {
     const buf = Buffer.from(base64String, 'base64');
-    // Use the fast turbo model for interim passes regardless of the final model.
+    const txUrl = (settings.transcriptionApiUrl || '').trim() || (settings.apiBaseUrl || '').trim();
     const interim = await transcribeAudioBuffer(
+<<<<<<< Updated upstream
       buf, settings.groqApiKey, 'whisper-large-v3-turbo', settings.transcriptionTimeoutMs, settings.language, settings.apiBaseUrl
+=======
+      buf, settings.groqApiKey, 'whisper-large-v3-turbo', settings.transcriptionTimeoutMs, settings.language, txUrl
+>>>>>>> Stashed changes
     );
     if (interim && interim.trim() && isRecording) {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -595,11 +813,34 @@ ipcMain.on('audio-base64-ready', async (_, base64String) => {
     assertApiKey();
 
     const startTime = Date.now();
+<<<<<<< Updated upstream
     // Run transcription and context gathering in parallel
     const [text, winInfo, selText, screenshotBase64] = await Promise.all([
       transcribeAudioBuffer(audioBuffer, settings.groqApiKey, settings.transcriptionModel, settings.transcriptionTimeoutMs, settings.language, settings.apiBaseUrl),
+=======
+    // Determine which transcription endpoint to use.
+    const txUrl = (settings.transcriptionApiUrl || '').trim() || (settings.apiBaseUrl || '').trim();
+
+    // Get active window info & selected text first to build the prompt bias
+    const [winInfo, selText] = await Promise.all([
+>>>>>>> Stashed changes
       ContextService.getActiveWindowInfo(),
-      ContextService.getSelectedText(),
+      ContextService.getSelectedText()
+    ]);
+
+    // Build a Whisper prompt from vocabulary + recent window title.
+    // This is the primary fix for single-word accuracy and custom-word spelling.
+    // Whisper uses the prompt as a spelling bias — words in it are spelled exactly.
+    const promptParts = [];
+    const customVocab = (settings.customVocabulary || '').trim();
+    if (customVocab) promptParts.push(customVocab);
+    if (winInfo?.title) promptParts.push(winInfo.title);
+    if (selText) promptParts.push(selText);
+    const whisperPrompt = promptParts.join(', ').slice(0, 224);
+
+    // Run transcription and screenshot in parallel
+    const [text, screenshotBase64] = await Promise.all([
+      transcribeAudioBuffer(audioBuffer, settings.groqApiKey, settings.transcriptionModel, settings.transcriptionTimeoutMs, settings.language, txUrl, whisperPrompt),
       ContextService.getScreenScreenshot()
     ]);
 
@@ -702,8 +943,13 @@ ipcMain.on('audio-base64-ready', async (_, base64String) => {
     // Inject or copy
     if (settings.injectText) {
       await injectTextIntoActiveWindow(finalText);
+      // Wait another 1.2 seconds for clipboard to restore before starting watch
+      setTimeout(() => {
+        startClipboardWatcher(finalText);
+      }, 1200);
     } else {
       clipboard.writeText(finalText);
+      startClipboardWatcher(finalText);
     }
 
     // Notification
@@ -826,6 +1072,48 @@ ipcMain.handle('export-test-case', async () => {
 });
 
 ipcMain.handle('copy-text', (_, t) => { clipboard.writeText(t); return true; });
+
+// ── Settings export / import ──────────────────────────────────────────────────
+ipcMain.handle('export-settings', async () => {
+  const { dialog } = require('electron');
+  const { filePath } = await dialog.showSaveDialog({
+    title: 'Export Sileo Settings',
+    defaultPath: 'sileo-settings.json',
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (!filePath) return { ok: false };
+  try {
+    // Export without sensitive key by default, but include the key since it's the user's own machine.
+    fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf8');
+    return { ok: true, filePath };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('import-settings', async () => {
+  const { dialog } = require('electron');
+  const { filePaths } = await dialog.showOpenDialog({
+    title: 'Import Sileo Settings',
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+    properties: ['openFile'],
+  });
+  if (!filePaths || !filePaths[0]) return { ok: false };
+  try {
+    const raw = fs.readFileSync(filePaths[0], 'utf8');
+    const imported = JSON.parse(raw);
+    // Merge imported over defaults (never let a bad import overwrite with undefined values)
+    const merged = { ...DEFAULTS, ...settings, ...imported };
+    await saveSettings(merged); // applies hotkey / push-to-talk / login-item side effects
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('settings-imported', merged);
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
 ipcMain.handle('win-minimize', () => { if (mainWindow) mainWindow.minimize(); });
 ipcMain.handle('win-maximize', () => {
   if (!mainWindow) return;
@@ -868,7 +1156,6 @@ app.whenReady().then(() => {
   console.log('[Sileo] App starting...');
   loadSettings();
   applyLoginItemSetting();
-  ensureTempDir();
   createMainWindow();
   createOverlay();
   setupTray();
@@ -893,7 +1180,7 @@ app.on('second-instance', () => {
 });
 
 app.on('window-all-closed', () => { /* keep alive in tray */ });
-app.on('before-quit', () => { app.isQuitting = true; cleanupTempFiles(); });
+app.on('before-quit', () => { app.isQuitting = true; });
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   PushToTalkService.disable();
