@@ -81,5 +81,5 @@ Sileo is free and open source.
 ---
 
 <p align="center">
-  <b>Sileo</b> — Built and maintained by KT.
+  <b>Sileo</b> — Built and maintained by Nabhan
 </p>
