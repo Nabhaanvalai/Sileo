@@ -2,8 +2,7 @@
   <img src="Resources/AppIcon-Source.png" width="128" height="128" alt="Sileo icon">
 </p><h1 align="center">Sileo</h1><p align="center">
   Free and open source alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">Superwhisper</a>, and <a href="https://monologue.to">Monologue</a>.
-</p><p align="center">
-  <a href="https://github.com/sileo-app/sileo/releases/latest/download/Sileo-Setup.exe"><b>⬇ Download Sileo-Setup.exe</b></a><br>
+</p><p align="center"><br>
   <sub>Works on Windows 10 and 11</sub>
 </p>---
 
