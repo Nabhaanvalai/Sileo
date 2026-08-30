@@ -7,9 +7,6 @@
   <sub>Works on Windows 10 and 11</sub>
 </p>---
 
-<p align="center">
-  <img src="Resources/demo.gif" alt="Sileo demo" width="600">
-</p><p align="center">
   <i>Created and maintained by Nabhan.</i>
 </p>Overview
 
